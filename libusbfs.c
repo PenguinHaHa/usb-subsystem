@@ -12,8 +12,15 @@
 #include <sys/ioctl.h>
 #include <fcntl.h>
 #include <linux/usbdevice_fs.h>
+#include <linux/usb/ch9.h>
 
 #include "libusbfs.h"
+
+///////////////
+// PROTOTYPE
+///////////////
+void usbfs_get_descriptors(int fd);
+
 ///////////////
 // LOCALS
 ///////////////
@@ -48,6 +55,44 @@ void check_usbfs_devices(void)
 
     usbfs_scan_busdir(entry->d_name);
   }
+}
+
+static const char *find_usbfs_path(void)
+{
+  const char *path;
+  int found = 0;
+
+  DIR *dir;
+  struct dirent *entry;
+
+  path = USBFS_DEVICE_PATH_DEV;
+  dir = opendir(path);
+  if (dir)
+  {
+    while (entry = readdir(dir))
+    {
+      if (entry->d_name[0] == '.')
+        continue;
+      return path;
+      break;
+    }
+  }
+
+  path = USBFS_DEVICE_PATH_PRO;
+  dir = opendir(path);
+  if (dir)
+  {
+    while (entry = readdir(dir))
+    {
+      if (entry->d_name[0] == '.')
+        continue;
+      return path;
+      break;
+    }
+  }
+
+  printf("find usbfs failed\n");
+  return NULL;
 }
 
 void usbfs_scan_busdir(const char *busname)
@@ -104,7 +149,33 @@ void usb_device_info_usbfs(const char *busname, const char *devname)
   }
 
   active_config = usbfs_get_active_config(fd);
-  printf("active_config %d\n", active_config);
+  usbfs_get_descriptors(fd);
+
+  close(fd);
+}
+
+void usbfs_get_descriptors(int fd)
+{
+  int ret;
+  struct usb_device_descriptor devdesc;
+  
+  // Get device descriptor firstly
+  ret = read(fd, &devdesc, sizeof(devdesc));
+  if (ret < 0)
+  {
+    lasterror = errno;
+    printf("line %d, read file failed (%d) -%s\n", __LINE__, lasterror, strerror(lasterror));
+    return;
+  }
+  printf("bLength %d | ", devdesc.bLength);
+  printf("bDescriptorType %d | ", devdesc.bDescriptorType);
+  printf("bcdUSB %04x | ", devdesc.bcdUSB);
+  printf("bDeviceClass %02x | ", devdesc.bDeviceClass);
+  printf("bDeviceSubClass %02x | ", devdesc.bDeviceSubClass);
+  printf("bDeviceProtocol %02x | ", devdesc.bDeviceProtocol);
+  printf("idVendor %04x | ", devdesc.idVendor);
+  printf("idProduct %04x | ", devdesc.idProduct);
+  printf("\n");
 }
 
 static int usbfs_get_active_config(int fd)
@@ -131,43 +202,7 @@ static int usbfs_get_active_config(int fd)
     return -1;
   }
   
+  printf("active_config %d\n", active_config);
   return active_config;
 }
 
-static const char *find_usbfs_path(void)
-{
-  const char *path;
-  int found = 0;
-
-  DIR *dir;
-  struct dirent *entry;
-
-  path = USBFS_DEVICE_PATH_DEV;
-  dir = opendir(path);
-  if (dir)
-  {
-    while (entry = readdir(dir))
-    {
-      if (entry->d_name[0] == '.')
-        continue;
-      return path;
-      break;
-    }
-  }
-
-  path = USBFS_DEVICE_PATH_PRO;
-  dir = opendir(path);
-  if (dir)
-  {
-    while (entry = readdir(dir))
-    {
-      if (entry->d_name[0] == '.')
-        continue;
-      return path;
-      break;
-    }
-  }
-
-  printf("find usbfs failed\n");
-  return NULL;
-}
