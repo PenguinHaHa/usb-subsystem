@@ -6,6 +6,7 @@
 //
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <errno.h>
 #include <string.h>
 #include <dirent.h>
@@ -13,6 +14,7 @@
 #include <fcntl.h>
 #include <linux/usbdevice_fs.h>
 #include <linux/usb/ch9.h>
+#include "storage.h"
 
 #include "libusbfs.h"
 
@@ -20,6 +22,8 @@
 // PROTOTYPE
 ///////////////
 void usbfs_get_descriptors(int fd);
+void parse_csw(struct bulk_cs_wrap *csw);
+static int bot_inquiry(int fd);
 
 ///////////////
 // LOCALS
@@ -150,6 +154,7 @@ void usb_device_info_usbfs(const char *busname, const char *devname)
 
   active_config = usbfs_get_active_config(fd);
   usbfs_get_descriptors(fd);
+  bot_inquiry(fd);
 
   close(fd);
 }
@@ -206,3 +211,94 @@ static int usbfs_get_active_config(int fd)
   return active_config;
 }
 
+// This function is used to send identify command to usb ata disk by BOT(Bulk only transport) protocol
+// the device type, command sets and protocol should be check before call this function
+static int bot_inquiry(int fd)
+{
+  int ret;
+  struct usbdevfs_bulktransfer *bulk_ctrl;
+  struct bulk_cb_wrap          *cbw;
+  struct bulk_cs_wrap          *csw;
+  char   *inquirydata;
+
+  inquirydata = (char *)malloc(36);
+  bulk_ctrl = (struct usbdevfs_bulktransfer *)malloc(sizeof(struct usbdevfs_bulktransfer));
+  cbw = (struct bulk_cb_wrap *)malloc(sizeof(struct bulk_cb_wrap));
+  csw = (struct bulk_cs_wrap *)malloc(sizeof(struct bulk_cs_wrap));
+
+  memset(inquirydata, 0, 36);
+  memset(bulk_ctrl, 0, sizeof(struct usbdevfs_bulktransfer));
+  memset(cbw, 0, sizeof(struct bulk_cb_wrap));
+  memset(csw, 0, sizeof(struct bulk_cs_wrap));
+
+  printf("This is bot_inquiry\n");
+  // Send command
+  cbw->Signature = 0x43425355;
+  cbw->Tag = 0x12;
+  cbw->DataTransferLength = 36;
+  cbw->Flags = 1 << 7;  // bit 7, 0: data-out from host to device, 1: data-in from device to host.
+  cbw->Lun = 0;
+  cbw->Length = 6;
+ 
+  cbw->CDB[0] = 0x12;
+  cbw->CDB[1] = 0;
+  cbw->CDB[2] = 0;
+  cbw->CDB[3] = 0;
+  cbw->CDB[4] = 36;
+  cbw->CDB[5] = 0;
+  
+  bulk_ctrl->ep = 0x2;        // bulk out endpoint addr, refer to descriptors info
+  bulk_ctrl->len = sizeof(struct bulk_cb_wrap);        // transferred data length
+  bulk_ctrl->timeout = 1000;  // 1 second
+  bulk_ctrl->data = cbw;
+
+  ret = ioctl(fd, USBDEVFS_BULK, &bulk_ctrl);
+  if (ret < 0)
+  {
+    lasterror = errno;
+    printf("bulk send command failed (%d) - %s\n", lasterror, strerror(lasterror));
+    return -1;
+  }
+
+  // Transfer data
+  bulk_ctrl->ep = 0x81;      // bulk in endpoint addr
+  bulk_ctrl->len = 36;
+  bulk_ctrl->timeout = 1000;
+  bulk_ctrl->data = inquirydata;
+
+  ret = ioctl(fd, USBDEVFS_BULK, &bulk_ctrl);
+  if (ret < 0)
+  {
+    lasterror = errno;
+    printf("bulk transfer data failed (%d) - %s\n", lasterror, strerror(lasterror));
+  } 
+  
+  // get status
+  bulk_ctrl->ep = 0x81;
+  bulk_ctrl->len = sizeof(struct bulk_cs_wrap);
+  bulk_ctrl->timeout = 1000;
+  bulk_ctrl->data = csw;
+  
+  ret = ioctl(fd, USBDEVFS_BULK, &bulk_ctrl);
+  if (ret < 0)
+  {
+    lasterror = errno;
+    printf("bulk transfer data failed (%d) - %s\n", lasterror, strerror(lasterror));
+    return -1;
+  }
+
+  parse_csw(csw);
+
+  free(bulk_ctrl);
+  free(cbw);
+  free(csw);
+  return 0;
+}
+
+void parse_csw(struct bulk_cs_wrap *csw)
+{
+  printf("Signature %x\n", csw->Signature);
+  printf("Tag %x\n", csw->Tag);
+  printf("Residue %x\n", csw->Residue);
+  printf("Status %x\n", csw->Status);
+}
